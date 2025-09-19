@@ -1,0 +1,26 @@
+{
+  "last_synced_commit": null,
+  "github": {
+    "token": "YOUR_GITHUB_TOKEN_HERE",
+    "username": "YOUR_GITHUB_USERNAME",
+    "email": "YOUR_EMAIL@example.com"
+  },
+  "repositories": {
+    "source": {
+      "owner": "beclab",
+      "repo": "apps",
+      "branch": "sync"
+    },
+    "target": {
+      "owner": "Above-Os",
+      "repo": "terminus-apps",
+      "branch": "main"
+    }
+  },
+  "sync_settings": {
+    "auto_resolve_conflicts": true,
+    "create_draft_pr": true,
+    "pr_title_template": "sync from prod {date}",
+    "pr_body_template": "## 同步内容\n\n{sync_commits}\n\n同步了 {commit_count} 个提交。"
+  }
+}
