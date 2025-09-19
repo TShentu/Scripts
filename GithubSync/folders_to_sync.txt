@@ -5,6 +5,4 @@
 # another-app
 
 # 实际测试文件夹（请根据实际情况修改）
-# 取消注释下面的行来测试实际文件夹
-# chinesesubfinder
-# rsshub
+
