@@ -41,3 +41,4 @@ Thumbs.db
 
 # Config (keep template but ignore actual tokens)
 sync_config.json
+folders_to_sync.txt
