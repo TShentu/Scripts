@@ -10,6 +10,7 @@ import subprocess
 import logging
 import shutil
 import yaml
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -269,40 +270,60 @@ class FolderSyncManager:
             version = self.get_folder_version(source_folder)
             logger.info(f"Folder version: {version}")
             
-            # 3. 复制文件夹到apps仓库
+            # 3. 确保在main分支上
+            logger.info("Switching to main branch...")
+            self.run_git_command(self.apps_repo_path, ["checkout", "main"])
+            
+            # 4. 拉取最新的main分支
+            logger.info("Pulling latest changes from main branch...")
+            self.run_git_command(self.apps_repo_path, ["pull", "origin", "main"])
+            
+            # 5. 复制文件夹到apps仓库
             target_folder = self.apps_repo_path / folder_name
             if not self.copy_folder(source_folder, target_folder):
                 return False
             
-            # 4. 检查是否有更改
+            # 6. 检查是否有更改
             if not self.has_changes(self.apps_repo_path):
                 logger.info(f"文件夹 {folder_name} 没有修改内容，跳过PR创建")
                 return True
             
-            # 5. 创建分支
+            # 7. 创建分支
             branch_name = f"sync-{folder_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
             if not self.create_branch(self.apps_repo_path, branch_name):
                 return False
             
-            # 6. 提交更改
+            # 8. 提交更改
             if not self.commit_changes(self.apps_repo_path, folder_name, version):
                 return False
             
-            # 7. 推送分支
+            # 9. 推送分支
             if not self.push_branch(self.apps_repo_path, branch_name):
                 return False
             
-            # 8. 创建PR
+            # 10. 创建PR
             pr_url = self.create_pull_request(folder_name, version, branch_name)
             if pr_url:
                 logger.info(f"Successfully synced folder {folder_name}, PR: {pr_url}")
+                # 等待5秒避免提交过快
+                logger.info("Waiting 5 seconds before next operation...")
+                time.sleep(5)
             else:
                 logger.warning(f"Folder {folder_name} synced but PR creation failed")
+            
+            # 11. 切换回main分支，为下一个文件夹做准备
+            logger.info("Switching back to main branch for next folder...")
+            self.run_git_command(self.apps_repo_path, ["checkout", "main"])
             
             return True
             
         except Exception as e:
             logger.error(f"Failed to sync folder {folder_name}: {e}")
+            # 确保在出错时也切换回main分支
+            try:
+                self.run_git_command(self.apps_repo_path, ["checkout", "main"])
+            except:
+                pass
             return False
     
     def sync_single_folder(self, folder_name: str, dry_run: bool = False):
@@ -337,14 +358,18 @@ class FolderSyncManager:
             # 1. 获取最新更改
             self.fetch_latest_changes()
             
-            # 2. 加载文件夹列表
+            # 2. 确保在main分支上开始
+            logger.info("Ensuring we start from main branch...")
+            self.run_git_command(self.apps_repo_path, ["checkout", "main"])
+            
+            # 3. 加载文件夹列表
             folders = self.load_folders_list()
             
             if not folders:
                 logger.info("No folders to sync")
                 return
             
-            # 3. 逐个同步文件夹
+            # 4. 逐个同步文件夹
             success_count = 0
             for i, folder_name in enumerate(folders, 1):
                 logger.info(f"Processing folder {i}/{len(folders)}: {folder_name}")
@@ -365,6 +390,11 @@ class FolderSyncManager:
             
         except Exception as e:
             logger.error(f"Folder sync failed: {e}")
+            # 确保在出错时也切换回main分支
+            try:
+                self.run_git_command(self.apps_repo_path, ["checkout", "main"])
+            except:
+                pass
             raise
 
 def main():
