@@ -230,15 +230,32 @@ class AppSyncManager:
                     # 如果有冲突，使用来自sync的文件版本
                     logger.warning(f"Conflict detected for commit {commit['hash'][:8]}, resolving with sync version...")
                     self.resolve_conflicts_with_sync(commit['hash'])
+                else:
+                    # 即使没有冲突，也确保使用sync分支的版本
+                    logger.debug(f"Ensuring sync version for commit {commit['hash'][:8]}...")
+                    self.ensure_sync_version(commit['hash'])
                 
-                # 提交更改
-                self.run_git_command(self.terminus_apps_origin_path, [
-                    "commit", "-m", commit['message'],
-                    "--author", f"{commit['author']} <{commit['author']}@users.noreply.github.com>",
-                    "--date", commit['date']
-                ])
+                # 检查是否有未合并的文件需要解决
+                self.resolve_unmerged_files(commit['hash'])
                 
-                logger.info(f"Successfully cherry-picked: {commit['hash'][:8]}")
+                # 检查是否有更改需要提交
+                status_result = self.run_git_command(
+                    self.terminus_apps_origin_path, 
+                    ["status", "--porcelain"], 
+                    check=False
+                )
+                
+                if status_result.stdout.strip():
+                    # 有更改，提交它们
+                    self.run_git_command(self.terminus_apps_origin_path, [
+                        "commit", "-m", commit['message'],
+                        "--author", f"{commit['author']} <{commit['author']}@users.noreply.github.com>",
+                        "--date", commit['date']
+                    ])
+                    logger.info(f"Successfully cherry-picked: {commit['hash'][:8]}")
+                else:
+                    # 没有更改，可能是空提交或者已经存在相同的更改
+                    logger.info(f"No changes to commit for {commit['hash'][:8]}, skipping...")
                 
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to cherry-pick commit {commit['hash'][:8]}: {e}")
@@ -249,26 +266,29 @@ class AppSyncManager:
     def resolve_conflicts_with_sync(self, commit_hash: str):
         """解决冲突，使用来自sync的文件版本"""
         try:
-            # 获取冲突文件列表
+            # 获取所有修改的文件（包括冲突文件）
             status_result = self.run_git_command(
                 self.terminus_apps_origin_path, 
                 ["status", "--porcelain"], 
                 check=False
             )
             
-            conflict_files = []
+            modified_files = []
             for line in status_result.stdout.strip().split('\n'):
-                if line.startswith('UU') or line.startswith('AA') or line.startswith('DD'):
-                    conflict_files.append(line[3:].strip())
+                if line.strip():
+                    # 获取文件路径（去掉状态标记）
+                    file_path = line[3:].strip()
+                    modified_files.append(file_path)
             
-            if not conflict_files:
+            if not modified_files:
+                logger.info("No files to resolve conflicts for")
                 return
             
-            logger.info(f"Resolving conflicts for {len(conflict_files)} files using sync version...")
+            logger.info(f"Resolving conflicts for {len(modified_files)} files using sync version...")
             
-            for file_path in conflict_files:
-                # 从apps仓库获取文件内容
+            for file_path in modified_files:
                 try:
+                    # 从apps仓库获取文件内容
                     file_content = self.run_git_command(
                         self.apps_repo_path,
                         ["show", f"{commit_hash}:{file_path}"]
@@ -281,16 +301,127 @@ class AppSyncManager:
                     
                     # 添加到暂存区
                     self.run_git_command(self.terminus_apps_origin_path, ["add", file_path])
+                    logger.debug(f"Resolved conflict for file: {file_path}")
                     
-                except subprocess.CalledProcessError:
+                except subprocess.CalledProcessError as e:
                     # 如果文件在commit中不存在，删除它
                     full_path = self.terminus_apps_origin_path / file_path
                     if full_path.exists():
                         full_path.unlink()
-                    self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        logger.debug(f"Removed file: {file_path}")
+                    else:
+                        logger.debug(f"File {file_path} already removed or doesn't exist")
+            
+            # 确保所有更改都已暂存
+            self.run_git_command(self.terminus_apps_origin_path, ["add", "."])
             
         except Exception as e:
             logger.error(f"Error resolving conflicts: {e}")
+            raise
+    
+    def ensure_sync_version(self, commit_hash: str):
+        """确保使用sync分支的版本，覆盖所有文件"""
+        try:
+            # 获取commit中修改的文件列表
+            files_result = self.run_git_command(
+                self.apps_repo_path,
+                ["diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash]
+            )
+            
+            modified_files = [f.strip() for f in files_result.stdout.strip().split('\n') if f.strip()]
+            
+            if not modified_files:
+                logger.debug("No files modified in this commit")
+                return
+            
+            logger.debug(f"Ensuring sync version for {len(modified_files)} files...")
+            
+            for file_path in modified_files:
+                try:
+                    # 从apps仓库获取文件内容
+                    file_content = self.run_git_command(
+                        self.apps_repo_path,
+                        ["show", f"{commit_hash}:{file_path}"]
+                    )
+                    
+                    # 写入文件
+                    full_path = self.terminus_apps_origin_path / file_path
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path.write_text(file_content.stdout, encoding='utf-8')
+                    
+                    # 添加到暂存区
+                    self.run_git_command(self.terminus_apps_origin_path, ["add", file_path])
+                    logger.debug(f"Updated file: {file_path}")
+                    
+                except subprocess.CalledProcessError as e:
+                    # 如果文件在commit中不存在，删除它
+                    full_path = self.terminus_apps_origin_path / file_path
+                    if full_path.exists():
+                        full_path.unlink()
+                        self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        logger.debug(f"Removed file: {file_path}")
+                    else:
+                        logger.debug(f"File {file_path} already removed or doesn't exist")
+            
+        except Exception as e:
+            logger.error(f"Error ensuring sync version: {e}")
+            raise
+    
+    def resolve_unmerged_files(self, commit_hash: str):
+        """解决未合并的文件，使用sync分支的版本"""
+        try:
+            # 检查是否有未合并的文件
+            status_result = self.run_git_command(
+                self.terminus_apps_origin_path, 
+                ["status", "--porcelain"], 
+                check=False
+            )
+            
+            unmerged_files = []
+            for line in status_result.stdout.strip().split('\n'):
+                if line.strip() and (line.startswith('UU') or line.startswith('AA') or line.startswith('DD') or line.startswith('U')):
+                    file_path = line[3:].strip()
+                    unmerged_files.append(file_path)
+            
+            if not unmerged_files:
+                logger.debug("No unmerged files found")
+                return
+            
+            logger.info(f"Resolving {len(unmerged_files)} unmerged files using sync version...")
+            
+            for file_path in unmerged_files:
+                try:
+                    # 从apps仓库获取文件内容
+                    file_content = self.run_git_command(
+                        self.apps_repo_path,
+                        ["show", f"{commit_hash}:{file_path}"]
+                    )
+                    
+                    # 写入文件
+                    full_path = self.terminus_apps_origin_path / file_path
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path.write_text(file_content.stdout, encoding='utf-8')
+                    
+                    # 添加到暂存区
+                    self.run_git_command(self.terminus_apps_origin_path, ["add", file_path])
+                    logger.debug(f"Resolved unmerged file: {file_path}")
+                    
+                except subprocess.CalledProcessError as e:
+                    # 如果文件在commit中不存在，删除它
+                    full_path = self.terminus_apps_origin_path / file_path
+                    if full_path.exists():
+                        full_path.unlink()
+                        self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        logger.debug(f"Removed unmerged file: {file_path}")
+                    else:
+                        logger.debug(f"Unmerged file {file_path} already removed or doesn't exist")
+            
+            # 确保所有更改都已暂存
+            self.run_git_command(self.terminus_apps_origin_path, ["add", "."])
+            
+        except Exception as e:
+            logger.error(f"Error resolving unmerged files: {e}")
             raise
     
     def create_pull_request(self, branch_name: str, commits: List[Dict]) -> Optional[str]:
@@ -336,7 +467,8 @@ class AppSyncManager:
                 "body": pr_body,
                 "head": branch_name,
                 "base": target_repo['branch'],
-                "draft": True
+                "draft": True,
+                "labels": ["enhancement"]
             }
             
             response = requests.post(url, headers=headers, json=data)
@@ -418,8 +550,26 @@ class AppSyncManager:
                 logger.error("Failed to cherry-pick commits")
                 return
             
-            # 6. 推送分支
-            self.run_git_command(self.terminus_apps_origin_path, ["push", "origin", branch_name])
+            # 6. 配置Git用户信息并推送分支
+            github_config = self.config.get("github", {})
+            if github_config.get("username") and github_config.get("email"):
+                self.run_git_command(self.terminus_apps_origin_path, [
+                    "config", "user.name", github_config["username"]
+                ])
+                self.run_git_command(self.terminus_apps_origin_path, [
+                    "config", "user.email", github_config["email"]
+                ])
+                logger.info(f"Configured Git user: {github_config['username']} <{github_config['email']}>")
+            
+            # 推送分支（使用token认证）
+            github_config = self.config.get("github", {})
+            if github_config.get("token"):
+                # 使用token进行推送
+                remote_url = f"https://{github_config['token']}@github.com/{self.config['repositories']['target']['owner']}/{self.config['repositories']['target']['repo']}.git"
+                self.run_git_command(self.terminus_apps_origin_path, ["push", remote_url, branch_name])
+            else:
+                # 使用默认推送
+                self.run_git_command(self.terminus_apps_origin_path, ["push", "origin", branch_name])
             logger.info(f"Pushed branch: {branch_name}")
             
             # 7. 创建PR
