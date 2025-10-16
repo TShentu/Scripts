@@ -211,32 +211,9 @@ class AppSyncManager:
             try:
                 logger.info(f"Cherry-picking commit: {commit['hash'][:8]} - {commit['message']}")
                 
-                # 从apps仓库获取commit的patch
-                patch_result = self.run_git_command(
-                    self.apps_repo_path, 
-                    ["format-patch", "-1", "--stdout", commit['hash']]
-                )
-                
-                # 应用patch到terminus-apps-origin
-                apply_result = subprocess.run(
-                    ["git", "apply", "--3way"],
-                    cwd=self.terminus_apps_origin_path,
-                    input=patch_result.stdout,
-                    text=True,
-                    capture_output=True
-                )
-                
-                if apply_result.returncode != 0:
-                    # 如果有冲突，使用来自sync的文件版本
-                    logger.warning(f"Conflict detected for commit {commit['hash'][:8]}, resolving with sync version...")
-                    self.resolve_conflicts_with_sync(commit['hash'])
-                else:
-                    # 即使没有冲突，也确保使用sync分支的版本
-                    logger.debug(f"Ensuring sync version for commit {commit['hash'][:8]}...")
-                    self.ensure_sync_version(commit['hash'])
-                
-                # 检查是否有未合并的文件需要解决
-                self.resolve_unmerged_files(commit['hash'])
+                # 直接使用sync分支的版本，确保文件内容完全一致
+                logger.debug(f"Ensuring sync version for commit {commit['hash'][:8]}...")
+                self.ensure_sync_version(commit['hash'])
                 
                 # 检查是否有更改需要提交
                 status_result = self.run_git_command(
@@ -254,14 +231,123 @@ class AppSyncManager:
                     ])
                     logger.info(f"Successfully cherry-picked: {commit['hash'][:8]}")
                 else:
-                    # 没有更改，可能是空提交或者已经存在相同的更改
-                    logger.info(f"No changes to commit for {commit['hash'][:8]}, skipping...")
+                    # 没有更改，检查是否真的没有差异
+                    # 比较源提交和目标仓库的当前状态
+                    if self.has_actual_changes(commit['hash']):
+                        logger.warning(f"Commit {commit['hash'][:8]} has changes but git status shows no changes. Forcing commit...")
+                        # 强制更新文件并提交
+                        self.force_update_files(commit['hash'])
+                        self.run_git_command(self.terminus_apps_origin_path, [
+                            "commit", "-m", commit['message'],
+                            "--author", f"{commit['author']} <{commit['author']}@users.noreply.github.com>",
+                            "--date", commit['date']
+                        ])
+                        logger.info(f"Force committed changes: {commit['hash'][:8]}")
+                    else:
+                        logger.info(f"No changes to commit for {commit['hash'][:8]}, skipping...")
                 
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to cherry-pick commit {commit['hash'][:8]}: {e}")
                 return False
         
         return True
+    
+    def has_actual_changes(self, commit_hash: str) -> bool:
+        """检查源提交是否与目标仓库当前状态有实际差异"""
+        try:
+            # 获取源提交中修改的文件列表
+            files_result = self.run_git_command(
+                self.apps_repo_path,
+                ["diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash]
+            )
+            
+            modified_files = [f.strip() for f in files_result.stdout.strip().split('\n') if f.strip()]
+            
+            if not modified_files:
+                return False
+            
+            # 检查每个文件是否有差异
+            for file_path in modified_files:
+                try:
+                    # 获取源文件内容
+                    source_content = self.run_git_command(
+                        self.apps_repo_path,
+                        ["show", f"{commit_hash}:{file_path}"]
+                    )
+                    
+                    # 获取目标文件内容
+                    target_file = self.terminus_apps_origin_path / file_path
+                    if target_file.exists():
+                        target_content = target_file.read_text(encoding='utf-8')
+                    else:
+                        target_content = ""
+                    
+                    # 比较内容
+                    if source_content.stdout != target_content:
+                        logger.debug(f"File {file_path} has differences")
+                        return True
+                        
+                except subprocess.CalledProcessError:
+                    # 如果源文件中不存在该文件，检查目标文件是否存在
+                    target_file = self.terminus_apps_origin_path / file_path
+                    if target_file.exists():
+                        logger.debug(f"File {file_path} exists in target but not in source")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking for actual changes: {e}")
+            return False
+    
+    def force_update_files(self, commit_hash: str):
+        """强制更新文件，确保git检测到变更"""
+        try:
+            # 获取commit中修改的文件列表
+            files_result = self.run_git_command(
+                self.apps_repo_path,
+                ["diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash]
+            )
+            
+            modified_files = [f.strip() for f in files_result.stdout.strip().split('\n') if f.strip()]
+            
+            if not modified_files:
+                return
+            
+            logger.debug(f"Force updating {len(modified_files)} files...")
+            
+            for file_path in modified_files:
+                try:
+                    # 从apps仓库获取文件内容
+                    file_content = self.run_git_command(
+                        self.apps_repo_path,
+                        ["show", f"{commit_hash}:{file_path}"]
+                    )
+                    
+                    # 写入文件
+                    full_path = self.terminus_apps_origin_path / file_path
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path.write_text(file_content.stdout, encoding='utf-8')
+                    
+                    # 强制添加到暂存区
+                    self.run_git_command(self.terminus_apps_origin_path, ["add", file_path])
+                    logger.debug(f"Force updated file: {file_path}")
+                    
+                except subprocess.CalledProcessError as e:
+                    # 如果文件在commit中不存在，删除它
+                    full_path = self.terminus_apps_origin_path / file_path
+                    if full_path.exists():
+                        full_path.unlink()
+                        self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        logger.debug(f"Force removed file: {file_path}")
+            
+            # 强制更新git索引
+            self.run_git_command(self.terminus_apps_origin_path, ["add", "."])
+            logger.debug("Force updated git index")
+            
+        except Exception as e:
+            logger.error(f"Error force updating files: {e}")
+            raise
     
     def resolve_conflicts_with_sync(self, commit_hash: str):
         """解决冲突，使用来自sync的文件版本"""
@@ -337,6 +423,7 @@ class AppSyncManager:
             
             logger.debug(f"Ensuring sync version for {len(modified_files)} files...")
             
+            files_updated = False
             for file_path in modified_files:
                 try:
                     # 从apps仓库获取文件内容
@@ -350,8 +437,9 @@ class AppSyncManager:
                     full_path.parent.mkdir(parents=True, exist_ok=True)
                     full_path.write_text(file_content.stdout, encoding='utf-8')
                     
-                    # 添加到暂存区
+                    # 强制添加到暂存区（即使内容相同）
                     self.run_git_command(self.terminus_apps_origin_path, ["add", file_path])
+                    files_updated = True
                     logger.debug(f"Updated file: {file_path}")
                     
                 except subprocess.CalledProcessError as e:
@@ -360,9 +448,16 @@ class AppSyncManager:
                     if full_path.exists():
                         full_path.unlink()
                         self.run_git_command(self.terminus_apps_origin_path, ["rm", file_path])
+                        files_updated = True
                         logger.debug(f"Removed file: {file_path}")
                     else:
                         logger.debug(f"File {file_path} already removed or doesn't exist")
+            
+            # 如果更新了文件但没有检测到变更，强制更新git索引
+            if files_updated:
+                # 强制更新索引，确保所有更改都被检测到
+                self.run_git_command(self.terminus_apps_origin_path, ["add", "."])
+                logger.debug("Forced git index update")
             
         except Exception as e:
             logger.error(f"Error ensuring sync version: {e}")
