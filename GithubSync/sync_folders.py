@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-文件夹同步脚本：将terminus-apps-origin仓库中指定的文件夹同步到apps仓库
+文件夹同步脚本：将Above-Os/terminus-apps仓库中指定的文件夹同步到beclab/apps仓库
 """
 
 import os
@@ -199,7 +199,7 @@ class FolderSyncManager:
             github_config = self.config.get("github", {})
             if github_config.get("token"):
                 # 使用token进行推送
-                remote_url = f"https://{github_config['token']}@github.com/{self.config['repositories']['source']['owner']}/{self.config['repositories']['source']['repo']}.git"
+                remote_url = f"https://{github_config['token']}@github.com/{self.config['sync_folders']['target']['owner']}/{self.config['sync_folders']['target']['repo']}.git"
                 self.run_git_command(repo_path, ["push", remote_url, branch_name])
             else:
                 # 使用默认推送
@@ -227,8 +227,8 @@ class FolderSyncManager:
             pr_body = f"### App Title\n{folder_name}\n\n### Description\n\n### Statement\n- [x] I have tested this application to ensure it is compatible with the Olares OS version stated in the `OlaresManifest.yaml`"
             
             # 创建PR
-            source_repo = self.config['repositories']['source']
-            url = f"https://api.github.com/repos/{source_repo['owner']}/{source_repo['repo']}/pulls"
+            target_repo = self.config['sync_folders']['target']
+            url = f"https://api.github.com/repos/{target_repo['owner']}/{target_repo['repo']}/pulls"
             headers = {
                 "Authorization": f"token {github_config['token']}",
                 "Accept": "application/vnd.github.v3+json"
@@ -238,7 +238,7 @@ class FolderSyncManager:
                 "title": pr_title,
                 "body": pr_body,
                 "head": branch_name,
-                "base": "main",
+                "base": target_repo['branch'],
                 "draft": True
             }
             
@@ -399,7 +399,7 @@ class FolderSyncManager:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="同步terminus-apps-origin仓库中的指定文件夹到apps仓库")
+    parser = argparse.ArgumentParser(description="同步Above-Os/terminus-apps仓库中的指定文件夹到beclab/apps仓库")
     parser.add_argument("--dry-run", action="store_true", help="只显示将要同步的文件夹，不实际执行")
     parser.add_argument("--config", default="sync_config.json", help="配置文件路径")
     parser.add_argument("--folders", default="folders_to_sync.txt", help="文件夹列表文件路径")

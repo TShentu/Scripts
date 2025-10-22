@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步脚本：将TShentu/apps仓库的sync分支同步到terminus-apps-origin仓库
+同步脚本：将beclab/apps仓库的sync分支同步到Above-Os/terminus-apps仓库
 """
 
 import os
@@ -54,7 +54,7 @@ class AppSyncManager:
                     "username": None,
                     "email": None
                 },
-                "repositories": {
+                "sync_apps": {
                     "source": {
                         "owner": "beclab",
                         "repo": "apps",
@@ -550,7 +550,7 @@ class AppSyncManager:
             )
             
             # 创建PR
-            target_repo = self.config['repositories']['target']
+            target_repo = self.config['sync_apps']['target']
             url = f"https://api.github.com/repos/{target_repo['owner']}/{target_repo['repo']}/pulls"
             headers = {
                 "Authorization": f"token {github_config['token']}",
@@ -660,7 +660,7 @@ class AppSyncManager:
             github_config = self.config.get("github", {})
             if github_config.get("token"):
                 # 使用token进行推送
-                remote_url = f"https://{github_config['token']}@github.com/{self.config['repositories']['target']['owner']}/{self.config['repositories']['target']['repo']}.git"
+                remote_url = f"https://{github_config['token']}@github.com/{self.config['sync_apps']['target']['owner']}/{self.config['sync_apps']['target']['repo']}.git"
                 self.run_git_command(self.terminus_apps_origin_path, ["push", remote_url, branch_name])
             else:
                 # 使用默认推送
@@ -684,7 +684,7 @@ class AppSyncManager:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="同步apps仓库的sync分支到terminus-apps-origin")
+    parser = argparse.ArgumentParser(description="同步beclab/apps仓库的sync分支到Above-Os/terminus-apps")
     parser.add_argument("--dry-run", action="store_true", help="只显示将要同步的内容，不实际执行")
     parser.add_argument("--config", default="sync_config.json", help="配置文件路径")
     parser.add_argument("--github-token", help="GitHub token (会覆盖配置文件中的设置)")
