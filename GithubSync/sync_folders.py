@@ -116,9 +116,21 @@ class FolderSyncManager:
             return "1.0.0"
     
     def folder_exists_in_target(self, folder_name: str) -> bool:
-        """检查目标仓库中是否存在同名文件夹"""
-        target_folder_path = self.apps_repo_path / folder_name
-        return target_folder_path.exists()
+        """检查目标仓库的git历史中是否存在同名文件夹（检查main分支）"""
+        try:
+            # 使用 git ls-tree 检查 main 分支中是否存在该文件夹
+            result = self.run_git_command(
+                self.apps_repo_path, 
+                ["ls-tree", "-d", "--name-only", "origin/main", folder_name],
+                check=False
+            )
+            # 如果命令成功且输出非空，说明文件夹存在
+            return result.returncode == 0 and bool(result.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Failed to check if folder exists in target: {e}")
+            # 如果检查失败，回退到检查本地文件系统（但这个方法不准确）
+            target_folder_path = self.apps_repo_path / folder_name
+            return target_folder_path.exists()
     
     def copy_folder(self, source_folder: Path, target_folder: Path) -> bool:
         """复制文件夹，替换目标文件夹"""
@@ -188,6 +200,18 @@ class FolderSyncManager:
     
     def get_pr_type(self, folder_name: str) -> str:
         """获取PR类型"""
+        # 检查源文件夹中是否存在特殊标记文件
+        source_folder = self.terminus_apps_origin_path / folder_name
+        
+        # 优先检查 .remove 文件
+        if (source_folder / ".remove").exists():
+            return "REMOVE"
+
+        # 其次检查 .suspend 文件
+        if (source_folder / ".suspend").exists():
+            return "SUSPEND"
+                    
+        # 检查目标仓库中是否存在该文件夹
         if self.folder_exists_in_target(folder_name):
             return "UPDATE"
         else:
